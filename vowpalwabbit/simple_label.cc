@@ -81,23 +81,23 @@ void parse_simple_label(parser* p, shared_data* sd, void* v, v_array<substring>&
   label_data* ld = (label_data*)v;
 
   switch(words.size()) {
-  case 0:
-    break;
-  case 1:
-    ld->label = float_of_substring(words[0]);
-    break;
-  case 2:
-    ld->label = float_of_substring(words[0]);
-    ld->weight = float_of_substring(words[1]);
-    break;
-  case 3:
-    ld->label = float_of_substring(words[0]);
-    ld->weight = float_of_substring(words[1]);
-    ld->initial = float_of_substring(words[2]);
-    break;
-  default:
-    cerr << "malformed example!\n";
-    cerr << "words.size() = " << words.size() << endl;
+    case 0:
+      break;
+    case 1:
+      ld->label = float_of_substring(words[0]);
+      break;
+    case 2:
+      ld->label = float_of_substring(words[0]);
+      ld->weight = float_of_substring(words[1]);
+      break;
+    case 3:
+      ld->label = float_of_substring(words[0]);
+      ld->weight = float_of_substring(words[1]);
+      ld->initial = float_of_substring(words[2]);
+      break;
+    default:
+      cerr << "malformed example!\n";
+      cerr << "words.size() = " << words.size() << endl;
   }
   if (words.size() > 0 && sd->binary_label && fabs(ld->label) != 1.f)
     cout << "You are using a label not -1 or 1 with a loss function expecting that!" << endl;
@@ -135,27 +135,27 @@ float query_decision(vw& all, example* ec, float k)
 void print_update(vw& all, example *ec)
 {
   if (all.sd->weighted_examples > all.sd->dump_interval && !all.quiet && !all.bfgs)
-    {
-      label_data* ld = (label_data*) ec->ld;
-      char label_buf[32];
-      if (ld->label == FLT_MAX)
-	strcpy(label_buf," unknown");
-      else
-	sprintf(label_buf,"%8.4f",ld->label);
+  {
+    label_data* ld = (label_data*) ec->ld;
+    char label_buf[32];
+    if (ld->label == FLT_MAX)
+      strcpy(label_buf," unknown");
+    else
+      sprintf(label_buf,"%8.4f",ld->label);
 
-      fprintf(stderr, "%-10.6f %-10.6f %10ld %11.1f %s %8.4f %8lu\n",
-	      all.sd->sum_loss/all.sd->weighted_examples,
-	      all.sd->sum_loss_since_last_dump / (all.sd->weighted_examples - all.sd->old_weighted_examples),
-	      (long int)all.sd->example_number,
-	      all.sd->weighted_examples,
-	      label_buf,
-	      ec->final_prediction,
-	      (long unsigned int)ec->num_features);
-     
-      all.sd->sum_loss_since_last_dump = 0.0;
-      all.sd->old_weighted_examples = all.sd->weighted_examples;
-      all.sd->dump_interval *= 2;
-    }
+    fprintf(stderr, "%-10.6f %-10.6f %10ld %11.1f %s %8.4f %8lu\n",
+        all.sd->sum_loss/all.sd->weighted_examples,
+        all.sd->sum_loss_since_last_dump / (all.sd->weighted_examples - all.sd->old_weighted_examples),
+        (long int)all.sd->example_number,
+        all.sd->weighted_examples,
+        label_buf,
+        ec->final_prediction,
+        (long unsigned int)ec->num_features);
+
+    all.sd->sum_loss_since_last_dump = 0.0;
+    all.sd->old_weighted_examples = all.sd->weighted_examples;
+    all.sd->dump_interval *= 2;
+  }
 }
 
 void output_and_account_example(vw& all, example* ec)
@@ -166,24 +166,24 @@ void output_and_account_example(vw& all, example* ec)
   all.sd->total_features += ec->num_features;
   all.sd->sum_loss += ec->loss;
   all.sd->sum_loss_since_last_dump += ec->loss;
-  
+
   all.print(all.raw_prediction, ec->partial_prediction, -1, ec->tag);
 
   float ai=-1; 
   if(all.active && ld->label == FLT_MAX)
     ai=query_decision(all, ec, (float)all.sd->weighted_unlabeled_examples);
   all.sd->weighted_unlabeled_examples += ld->label == FLT_MAX ? ld->weight : 0;
-  
+
   for (size_t i = 0; i<all.final_prediction_sink.size(); i++)
-    {
-      int f = (int)all.final_prediction_sink[i];
-      if(all.active)
-	active_print_result(f, ec->final_prediction, ai, ec->tag);
-      else if (all.lda > 0)
-	print_lda_result(all, f,ec->topic_predictions.begin,0.,ec->tag);
-      else
-	all.print(f, ec->final_prediction, 0, ec->tag);
-    }
+  {
+    int f = (int)all.final_prediction_sink[i];
+    if(all.active)
+      active_print_result(f, ec->final_prediction, ai, ec->tag);
+    else if (all.lda > 0)
+      print_lda_result(all, f,ec->topic_predictions.begin,0.,ec->tag);
+    else
+      all.print(f, ec->final_prediction, 0, ec->tag);
+  }
 
   all.sd->example_number++;
 

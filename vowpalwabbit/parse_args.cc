@@ -1,8 +1,8 @@
 /*
-Copyright (c) by respective owners including Yahoo!, Microsoft, and
-individual contributors. All rights reserved.  Released under a BSD (revised)
-license as described in the file LICENSE.
- */
+   Copyright (c) by respective owners including Yahoo!, Microsoft, and
+   individual contributors. All rights reserved.  Released under a BSD (revised)
+   license as described in the file LICENSE.
+   */
 #include <stdio.h>
 #include <float.h>
 
@@ -22,6 +22,8 @@ license as described in the file LICENSE.
 #include "cb.h"
 #include "searn.h"
 #include "bfgs.h"
+#include "owlqn.h"
+#include "ftrl_proximal.h"
 #include "lda_core.h"
 #include "noop.h"
 #include "gd_mf.h"
@@ -36,17 +38,17 @@ using namespace std;
 //
 bool ends_with(string const &fullString, string const &ending)
 {
-    if (fullString.length() > ending.length()) {
-        return (fullString.compare(fullString.length() - ending.length(), ending.length(), ending) == 0);
-    } else {
-        return false;
-    }
+  if (fullString.length() > ending.length()) {
+    return (fullString.compare(fullString.length() - ending.length(), ending.length(), ending) == 0);
+  } else {
+    return false;
+  }
 }
 
 vw parse_args(int argc, char *argv[])
 {
   po::options_description desc("VW options");
-  
+
   vw all;
   size_t random_seed = 0;
   all.program_name = argv[0];
@@ -66,6 +68,10 @@ vw parse_args(int argc, char *argv[])
     ("bit_precision,b", po::value<size_t>(),
      "number of bits in the feature table")
     ("bfgs", "use bfgs optimization")
+    ("owlqn", "use owlqn optimization")
+    ("ftrl", "use ftrl-proximal optimization")
+    ("ftrl_alpha", po::value<float>(), "learning rate for ftrl-proximal optimization")
+    ("progressive_validation", po::value<string>(), "file to record progressive validation for ftrl-proximal")
     ("cache,c", "Use a cache.  The default is <data>.cache")
     ("cache_file", po::value< vector<string> >(), "The location(s) of cache_file.")
     ("compressed", "use gzip format whenever possible. If a cache file is being created, this option creates a compressed cache file. A mixture of raw-text & compressed inputs are supported with autodetection.")
@@ -101,7 +107,7 @@ vw parse_args(int argc, char *argv[])
     ("span_server", po::value<string>(&all.span_server), "Location of server for setting up spanning tree")
     ("min_prediction", po::value<float>(&all.sd->min_label), "Smallest prediction to output")
     ("max_prediction", po::value<float>(&all.sd->max_label), "Largest prediction to output")
-    ("mem", po::value<int>(&all.m), "memory in bfgs")
+    ("mem", po::value<int>(&all.m), "memory in bfgs or owlqn")
     ("nn", po::value<size_t>(), "Use sigmoidal feedforward network with <k> hidden units")
     ("noconstant", "Don't add a constant feature")
     ("noop","do no learning")
@@ -189,7 +195,7 @@ vw parse_args(int argc, char *argv[])
   msrand48(random_seed);
 
   if (vm.count("active_simulation"))
-      all.active_simulation = true;
+    all.active_simulation = true;
 
   if (vm.count("active_learning") && !all.active_simulation)
     all.active = true;
@@ -198,21 +204,21 @@ vw parse_args(int argc, char *argv[])
     all.stdin_off = true;
 
   if (vm.count("testonly") || all.eta == 0.)
-    {
-      if (!all.quiet)
-	cerr << "only testing" << endl;
-      all.training = false;
-      if (all.lda > 0)
-        all.eta = 0;
-    }
+  {
+    if (!all.quiet)
+      cerr << "only testing" << endl;
+    all.training = false;
+    if (all.lda > 0)
+      all.eta = 0;
+  }
   else
     all.training = true;
 
   if ( (vm.count("total") || vm.count("node") || vm.count("unique_id")) && !(vm.count("total") && vm.count("node") && vm.count("unique_id")) )
-    {
-      cout << "you must specificy unique_id, total, and node if you specify any" << endl;
-      throw exception();
-    }
+  {
+    cout << "you must specificy unique_id, total, and node if you specify any" << endl;
+    throw exception();
+  }
 
   all.stride = 4; //use stride of 4 for default invariant normalized adaptive updates
   //if we are doing matrix factorization, or user specified anything in sgd,adaptive,invariant,normalized, we turn off default update rules and use whatever user specified
@@ -243,6 +249,12 @@ vw parse_args(int argc, char *argv[])
   if (vm.count("bfgs") || vm.count("conjugate_gradient")) 
     BFGS::parse_args(all, to_pass_further, vm, vm_file);
 
+  if (vm.count("owlqn"))
+    OWLQN::parse_args(all, to_pass_further, vm, vm_file);
+  
+  if (vm.count("ftrl"))
+    FTRL::parse_args(all, to_pass_further, vm, vm_file);
+
   if (vm.count("version") || argc == 1) {
     /* upon direct query for version -- spit it out to stdout */
     cout << version.to_string() << "\n";
@@ -254,38 +266,38 @@ vw parse_args(int argc, char *argv[])
     all.ngram = vm["ngram"].as<size_t>();
     if(!vm.count("skip_gram")) cerr << "You have chosen to generate " << all.ngram << "-grams" << endl;
     if(vm.count("sort_features"))
-      {
-	cerr << "ngram is incompatible with sort_features.  " << endl;
-	throw exception();
-      }
+    {
+      cerr << "ngram is incompatible with sort_features.  " << endl;
+      throw exception();
+    }
   }
   if(vm.count("skips"))
-    {
+  {
     all.skips = vm["skips"].as<size_t>();
     if(!vm.count("ngram"))
-      {
-	cout << "You can not skip unless ngram is > 1" << endl;
-	throw exception();
-      }
+    {
+      cout << "You can not skip unless ngram is > 1" << endl;
+      throw exception();
+    }
     cerr << "You have chosen to generate " << all.skips << "-skip-" << all.ngram << "-grams" << endl;
     if(all.skips > 4)
-      {
+    {
       cout << "*********************************" << endl;
       cout << "Generating these features might take quite some time" << endl;
       cout << "*********************************" << endl;
-      }
     }
+  }
   if (vm.count("bit_precision"))
+  {
+    all.default_bits = false;
+    all.num_bits = (uint32_t)vm["bit_precision"].as< size_t>();
+    if (all.num_bits > min(32, sizeof(size_t)*8 - 3))
     {
-      all.default_bits = false;
-      all.num_bits = (uint32_t)vm["bit_precision"].as< size_t>();
-      if (all.num_bits > min(32, sizeof(size_t)*8 - 3))
-	{
-	  cout << "Only " << min(32, sizeof(size_t)*8 - 3) << " or fewer bits allowed.  If this is a serious limit, speak up." << endl;
-	  throw exception();
-	}
+      cout << "Only " << min(32, sizeof(size_t)*8 - 3) << " or fewer bits allowed.  If this is a serious limit, speak up." << endl;
+      throw exception();
     }
-  
+  }
+
   if (vm.count("daemon") || vm.count("pid_file") || vm.count("port")) {
     all.daemon = true;
 
@@ -294,7 +306,7 @@ vw parse_args(int argc, char *argv[])
   }
 
   if (vm.count("compressed"))
-      set_compressed(all.p);
+    set_compressed(all.p);
 
   if (vm.count("data")) {
     all.data_filename = vm["data"].as<string>();
@@ -308,42 +320,42 @@ vw parse_args(int argc, char *argv[])
     all.p->sort_features = true;
 
   if (vm.count("quadratic"))
+  {
+    all.pairs = vm["quadratic"].as< vector<string> >();
+    if (!all.quiet)
     {
-      all.pairs = vm["quadratic"].as< vector<string> >();
-      if (!all.quiet)
-	{
-	  cerr << "creating quadratic features for pairs: ";
-	  for (vector<string>::iterator i = all.pairs.begin(); i != all.pairs.end();i++) {
-	    cerr << *i << " ";
-	    if (i->length() > 2)
-	      cerr << endl << "warning, ignoring characters after the 2nd.\n";
-	    if (i->length() < 2) {
-	      cerr << endl << "error, quadratic features must involve two sets.\n";
-	      throw exception();
-	    }
-	  }
-	  cerr << endl;
-	}
+      cerr << "creating quadratic features for pairs: ";
+      for (vector<string>::iterator i = all.pairs.begin(); i != all.pairs.end();i++) {
+        cerr << *i << " ";
+        if (i->length() > 2)
+          cerr << endl << "warning, ignoring characters after the 2nd.\n";
+        if (i->length() < 2) {
+          cerr << endl << "error, quadratic features must involve two sets.\n";
+          throw exception();
+        }
+      }
+      cerr << endl;
     }
+  }
 
   if (vm.count("cubic"))
+  {
+    all.triples = vm["cubic"].as< vector<string> >();
+    if (!all.quiet)
     {
-      all.triples = vm["cubic"].as< vector<string> >();
-      if (!all.quiet)
-	{
-	  cerr << "creating cubic features for triples: ";
-	  for (vector<string>::iterator i = all.triples.begin(); i != all.triples.end();i++) {
-	    cerr << *i << " ";
-	    if (i->length() > 3)
-	      cerr << endl << "warning, ignoring characters after the 3rd.\n";
-	    if (i->length() < 3) {
-	      cerr << endl << "error, cubic features must involve three sets.\n";
-	      throw exception();
-	    }
-	  }
-	  cerr << endl;
-	}
+      cerr << "creating cubic features for triples: ";
+      for (vector<string>::iterator i = all.triples.begin(); i != all.triples.end();i++) {
+        cerr << *i << " ";
+        if (i->length() > 3)
+          cerr << endl << "warning, ignoring characters after the 3rd.\n";
+        if (i->length() < 3) {
+          cerr << endl << "error, cubic features must involve three sets.\n";
+          throw exception();
+        }
+      }
+      cerr << endl;
     }
+  }
 
   io_buf io_temp;
   parse_regressor_args(all, vm, io_temp);
@@ -363,45 +375,45 @@ vw parse_args(int argc, char *argv[])
   all.ignore_some = false;
 
   if (vm.count("ignore"))
+  {
+    all.ignore_some = true;
+
+    vector<unsigned char> ignore = vm["ignore"].as< vector<unsigned char> >();
+    for (vector<unsigned char>::iterator i = ignore.begin(); i != ignore.end();i++)
     {
-      all.ignore_some = true;
-
-      vector<unsigned char> ignore = vm["ignore"].as< vector<unsigned char> >();
-      for (vector<unsigned char>::iterator i = ignore.begin(); i != ignore.end();i++)
-	{
-	  all.ignore[*i] = true;
-	}
-      if (!all.quiet)
-	{
-	  cerr << "ignoring namespaces beginning with: ";
-	  for (vector<unsigned char>::iterator i = ignore.begin(); i != ignore.end();i++)
-	    cerr << *i << " ";
-
-	  cerr << endl;
-	}
+      all.ignore[*i] = true;
     }
+    if (!all.quiet)
+    {
+      cerr << "ignoring namespaces beginning with: ";
+      for (vector<unsigned char>::iterator i = ignore.begin(); i != ignore.end();i++)
+        cerr << *i << " ";
+
+      cerr << endl;
+    }
+  }
 
   if (vm.count("keep"))
+  {
+    for (size_t i = 0; i < 256; i++)
+      all.ignore[i] = true;
+
+    all.ignore_some = true;
+
+    vector<unsigned char> keep = vm["keep"].as< vector<unsigned char> >();
+    for (vector<unsigned char>::iterator i = keep.begin(); i != keep.end();i++)
     {
-      for (size_t i = 0; i < 256; i++)
-        all.ignore[i] = true;
-
-      all.ignore_some = true;
-
-      vector<unsigned char> keep = vm["keep"].as< vector<unsigned char> >();
-      for (vector<unsigned char>::iterator i = keep.begin(); i != keep.end();i++)
-	{
-	  all.ignore[*i] = false;
-	}
-      if (!all.quiet)
-	{
-	  cerr << "using namespaces beginning with: ";
-	  for (vector<unsigned char>::iterator i = keep.begin(); i != keep.end();i++)
-	    cerr << *i << " ";
-
-	  cerr << endl;
-	}
+      all.ignore[*i] = false;
     }
+    if (!all.quiet)
+    {
+      cerr << "using namespaces beginning with: ";
+      for (vector<unsigned char>::iterator i = keep.begin(); i != keep.end();i++)
+        cerr << *i << " ";
+
+      cerr << endl;
+    }
+  }
 
   // matrix factorization enabled
   if (all.rank > 0) {
@@ -411,25 +423,25 @@ vw parse_args(int argc, char *argv[])
     all.random_weights = true;
 
     if ( vm.count("adaptive") )
-      {
-	cerr << "adaptive is not implemented for matrix factorization" << endl;
-        throw exception();
-      }
+    {
+      cerr << "adaptive is not implemented for matrix factorization" << endl;
+      throw exception();
+    }
     if ( vm.count("normalized") )
-      {
-	cerr << "normalized is not implemented for matrix factorization" << endl;
-        throw exception();
-      }
+    {
+      cerr << "normalized is not implemented for matrix factorization" << endl;
+      throw exception();
+    }
     if ( vm.count("exact_adaptive_norm") )
-      {
-	cerr << "normalized adaptive updates is not implemented for matrix factorization" << endl;
-        throw exception();
-      }
+    {
+      cerr << "normalized adaptive updates is not implemented for matrix factorization" << endl;
+      throw exception();
+    }
     if (vm.count("bfgs") || vm.count("conjugate_gradient"))
-      {
-	cerr << "bfgs is not implemented for matrix factorization" << endl;
-	throw exception();
-      }	
+    {
+      cerr << "bfgs is not implemented for matrix factorization" << endl;
+      throw exception();
+    }	
 
     //default initial_t to 1 instead of 0
     if(!vm.count("initial_t")) {
@@ -450,10 +462,10 @@ vw parse_args(int argc, char *argv[])
 
   if (!vm.count("lda") && !all.adaptive && !all.normalized_updates) 
     all.eta *= powf((float)(all.sd->t), all.power_t);
-  
+
   if (vm.count("readable_model"))
     all.text_regressor_name = vm["readable_model"].as<string>();
-  
+
   if (vm.count("save_per_pass"))
     all.save_per_pass = true;
 
@@ -479,7 +491,7 @@ vw parse_args(int argc, char *argv[])
   all.is_noop = false;
   if (vm.count("noop")) 
     NOOP::parse_flags(all);
-  
+
   if (all.rank != 0) 
     GDMF::parse_flags(all);
 
@@ -487,40 +499,40 @@ vw parse_args(int argc, char *argv[])
 
   if (pow((double)all.eta_decay_rate, (double)all.numpasses) < 0.0001 )
     cerr << "Warning: the learning rate for the last pass is multiplied by: " << pow((double)all.eta_decay_rate, (double)all.numpasses)
-	 << " adjust --decay_learning_rate larger to avoid this." << endl;
+      << " adjust --decay_learning_rate larger to avoid this." << endl;
 
   if (!all.quiet)
-    {
-      cerr << "Num weight bits = " << all.num_bits << endl;
-      cerr << "learning rate = " << all.eta << endl;
-      cerr << "initial_t = " << all.sd->t << endl;
-      cerr << "power_t = " << all.power_t << endl;
-      if (all.numpasses > 1)
-	cerr << "decay_learning_rate = " << all.eta_decay_rate << endl;
-      if (all.rank > 0)
-	cerr << "rank = " << all.rank << endl;
-    }
+  {
+    cerr << "Num weight bits = " << all.num_bits << endl;
+    cerr << "learning rate = " << all.eta << endl;
+    cerr << "initial_t = " << all.sd->t << endl;
+    cerr << "power_t = " << all.power_t << endl;
+    if (all.numpasses > 1)
+      cerr << "decay_learning_rate = " << all.eta_decay_rate << endl;
+    if (all.rank > 0)
+      cerr << "rank = " << all.rank << endl;
+  }
 
   if (vm.count("predictions")) {
     if (!all.quiet)
       cerr << "predictions = " <<  vm["predictions"].as< string >() << endl;
     if (strcmp(vm["predictions"].as< string >().c_str(), "stdout") == 0)
-      {
-	all.final_prediction_sink.push_back((size_t) 1);//stdout
-      }
+    {
+      all.final_prediction_sink.push_back((size_t) 1);//stdout
+    }
     else
-      {
-	const char* fstr = (vm["predictions"].as< string >().c_str());
-	int f;
+    {
+      const char* fstr = (vm["predictions"].as< string >().c_str());
+      int f;
 #ifdef _WIN32
-	_sopen_s(&f, fstr, _O_CREAT|_O_WRONLY|_O_BINARY|_O_TRUNC, _SH_DENYWR, _S_IREAD|_S_IWRITE);
+      _sopen_s(&f, fstr, _O_CREAT|_O_WRONLY|_O_BINARY|_O_TRUNC, _SH_DENYWR, _S_IREAD|_S_IWRITE);
 #else
-	f = open(fstr, O_CREAT|O_WRONLY|O_LARGEFILE|O_TRUNC,0666);
+      f = open(fstr, O_CREAT|O_WRONLY|O_LARGEFILE|O_TRUNC,0666);
 #endif
-	if (f < 0)
-	  cerr << "Error opening the predictions file: " << fstr << endl;
-	all.final_prediction_sink.push_back((size_t) f);
-      }
+      if (f < 0)
+        cerr << "Error opening the predictions file: " << fstr << endl;
+      all.final_prediction_sink.push_back((size_t) f);
+    }
   }
 
   if (vm.count("raw_predictions")) {
@@ -529,16 +541,16 @@ vw parse_args(int argc, char *argv[])
     if (strcmp(vm["raw_predictions"].as< string >().c_str(), "stdout") == 0)
       all.raw_prediction = 1;//stdout
     else
-	{
-	  const char* t = vm["raw_predictions"].as< string >().c_str();
-	  int f;
+    {
+      const char* t = vm["raw_predictions"].as< string >().c_str();
+      int f;
 #ifdef _WIN32
-	  _sopen_s(&f, t, _O_CREAT|_O_WRONLY|_O_BINARY|_O_TRUNC, _SH_DENYWR, _S_IREAD|_S_IWRITE);
+      _sopen_s(&f, t, _O_CREAT|_O_WRONLY|_O_BINARY|_O_TRUNC, _SH_DENYWR, _S_IREAD|_S_IWRITE);
 #else
-	  f = open(t, O_CREAT|O_WRONLY|O_LARGEFILE|O_TRUNC,0666);
+      f = open(t, O_CREAT|O_WRONLY|O_LARGEFILE|O_TRUNC,0666);
 #endif
-	  all.raw_prediction = f;
-	}
+      all.raw_prediction = f;
+    }
   }
 
   if (vm.count("audit"))
@@ -562,12 +574,12 @@ vw parse_args(int argc, char *argv[])
   all.reg_mode += (all.l1_lambda > 0.) ? 1 : 0;
   all.reg_mode += (all.l2_lambda > 0.) ? 2 : 0;
   if (!all.quiet)
-    {
-      if (all.reg_mode %2)
-	cerr << "using l1 regularization = " << all.l1_lambda << endl;
-      if (all.reg_mode > 1)
-	cerr << "using l2 regularization = " << all.l2_lambda << endl;
-    }
+  {
+    if (all.reg_mode %2)
+      cerr << "using l1 regularization = " << all.l1_lambda << endl;
+    if (all.reg_mode > 1)
+      cerr << "using l2 regularization = " << all.l2_lambda << endl;
+  }
 
   bool got_mc = false;
   bool got_cs = false;
@@ -576,7 +588,7 @@ vw parse_args(int argc, char *argv[])
   if(vm.count("nn") || vm_file.count("nn") ) {
     NN::parse_flags(all, to_pass_further, vm, vm_file);
   }
-  
+
   if (vm.count("binary") || vm_file.count("binary"))
     BINARY::parse_flags(all, to_pass_further, vm, vm_file);
 
@@ -586,7 +598,7 @@ vw parse_args(int argc, char *argv[])
     OAA::parse_flags(all, to_pass_further, vm, vm_file);
     got_mc = true;
   }
-  
+
   if (vm.count("ect") || vm_file.count("ect") ) {
     if (got_mc) { cerr << "error: cannot specify multiple MC learners" << endl; throw exception(); }
 
@@ -596,14 +608,14 @@ vw parse_args(int argc, char *argv[])
 
   if(vm.count("csoaa") || vm_file.count("csoaa") ) {
     if (got_cs) { cerr << "error: cannot specify multiple CS learners" << endl; throw exception(); }
-    
+
     CSOAA::parse_flags(all, to_pass_further, vm, vm_file);
     got_cs = true;
   }
 
   if(vm.count("wap") || vm_file.count("wap") ) {
     if (got_cs) { cerr << "error: cannot specify multiple CS learners" << endl; throw exception(); }
-    
+
     WAP::parse_flags(all, to_pass_further, vm, vm_file);
     got_cs = true;
   }
@@ -646,7 +658,7 @@ vw parse_args(int argc, char *argv[])
       //add csoaa flag to vm so that it is parsed in csoaa::parse_flags
       if( vm_file.count("searn") ) vm.insert(pair<string,po::variable_value>(string("csoaa"),vm_file["searn"]));
       else vm.insert(pair<string,po::variable_value>(string("csoaa"),vm["searn"]));
-      
+
       CSOAA::parse_flags(all, to_pass_further, vm, vm_file);  // default to CSOAA unless others have been specified
       got_cs = true;
     }
@@ -658,7 +670,7 @@ vw parse_args(int argc, char *argv[])
       //add csoaa flag to vm so that it is parsed in csoaa::parse_flags
       if( vm_file.count("searnimp") ) vm.insert(pair<string,po::variable_value>(string("csoaa"),vm_file["searnimp"]));
       else vm.insert(pair<string,po::variable_value>(string("csoaa"),vm["searnimp"]));
-      
+
       CSOAA::parse_flags(all, to_pass_further, vm, vm_file);  // default to CSOAA unless others have been specified
       got_cs = true;
     }
@@ -683,9 +695,9 @@ vw parse_args(int argc, char *argv[])
       int f = io_buf().open_file(last_unrec_arg.c_str(), all.stdin_off, io_buf::READ);
       if (f != -1) {
 #ifdef _WIN32
-		 _close(f);
+        _close(f);
 #else
-		  close(f);
+        close(f);
 #endif
         //cerr << "warning: final argument '" << last_unrec_arg << "' assumed to be input file; in the future, please use -d" << endl;
         all.data_filename = last_unrec_arg;
@@ -709,104 +721,104 @@ vw parse_args(int argc, char *argv[])
   return all;
 }
 
-namespace VW {
-  void cmd_string_replace_value( string& cmd, string flag_to_replace, string new_value )
-  {
-    flag_to_replace.append(" "); //add a space to make sure we obtain the right flag in case 2 flags start with the same set of characters
-    size_t pos = cmd.find(flag_to_replace);
-    if( pos == string::npos ) {
-      //flag currently not present in command string, so just append it to command string
-      cmd.append(" ");
-      cmd.append(flag_to_replace);
-      cmd.append(new_value);
-    }
-    else {
-      //flag is present, need to replace old value with new value
-      
-      //compute position after flag_to_replace
-      pos += flag_to_replace.size();
-
-      //now pos is position where value starts
-      //find position of next space
-      size_t pos_after_value = cmd.find(" ",pos);
-      if(pos_after_value == string::npos) {
-        //we reach the end of the string, so replace the all characters after pos by new_value
-        cmd.replace(pos,cmd.size()-pos,new_value);
+  namespace VW {
+    void cmd_string_replace_value( string& cmd, string flag_to_replace, string new_value )
+    {
+      flag_to_replace.append(" "); //add a space to make sure we obtain the right flag in case 2 flags start with the same set of characters
+      size_t pos = cmd.find(flag_to_replace);
+      if( pos == string::npos ) {
+        //flag currently not present in command string, so just append it to command string
+        cmd.append(" ");
+        cmd.append(flag_to_replace);
+        cmd.append(new_value);
       }
       else {
-        //replace characters between pos and pos_after_value by new_value
-        cmd.replace(pos,pos_after_value-pos,new_value);
+        //flag is present, need to replace old value with new value
+
+        //compute position after flag_to_replace
+        pos += flag_to_replace.size();
+
+        //now pos is position where value starts
+        //find position of next space
+        size_t pos_after_value = cmd.find(" ",pos);
+        if(pos_after_value == string::npos) {
+          //we reach the end of the string, so replace the all characters after pos by new_value
+          cmd.replace(pos,cmd.size()-pos,new_value);
+        }
+        else {
+          //replace characters between pos and pos_after_value by new_value
+          cmd.replace(pos,pos_after_value-pos,new_value);
+        }
       }
     }
-  }
 
-  char** get_argv_from_string(string s, int& argc)
-  {
-    char* c = (char*)calloc(s.length()+3, sizeof(char));
-    c[0] = 'b';
-    c[1] = ' ';
-    strcpy(c+2, s.c_str());
-    substring ss = {c, c+s.length()+2};
-    v_array<substring> foo;
-    foo.end_array = foo.begin = foo.end = NULL;
-    tokenize(' ', ss, foo);
-    
-    char** argv = (char**)calloc(foo.size(), sizeof(char*));
-    for (size_t i = 0; i < foo.size(); i++)
+    char** get_argv_from_string(string s, int& argc)
+    {
+      char* c = (char*)calloc(s.length()+3, sizeof(char));
+      c[0] = 'b';
+      c[1] = ' ';
+      strcpy(c+2, s.c_str());
+      substring ss = {c, c+s.length()+2};
+      v_array<substring> foo;
+      foo.end_array = foo.begin = foo.end = NULL;
+      tokenize(' ', ss, foo);
+
+      char** argv = (char**)calloc(foo.size(), sizeof(char*));
+      for (size_t i = 0; i < foo.size(); i++)
       {
-	*(foo[i].end) = '\0';
-	argv[i] = (char*)calloc(foo[i].end-foo[i].begin+1, sizeof(char));
+        *(foo[i].end) = '\0';
+        argv[i] = (char*)calloc(foo[i].end-foo[i].begin+1, sizeof(char));
         sprintf(argv[i],"%s",foo[i].begin);
       }
 
-    argc = (int)foo.size();
-    free(c);
-    foo.delete_v();
-    return argv;
-  }
- 
-  vw initialize(string s)
-  {
-    int argc = 0;
-    s += " --no_stdin";
-    char** argv = get_argv_from_string(s,argc);
-    
-    vw all = parse_args(argc, argv);
-    
-    initialize_examples(all);
+      argc = (int)foo.size();
+      free(c);
+      foo.delete_v();
+      return argv;
+    }
 
-    for(int i = 0; i < argc; i++)
-      free(argv[i]);
-    free (argv);
+    vw initialize(string s)
+    {
+      int argc = 0;
+      s += " --no_stdin";
+      char** argv = get_argv_from_string(s,argc);
 
-    return all;
-  }
+      vw all = parse_args(argc, argv);
 
-  void finish(vw& all)
-  {
-    finalize_regressor(all, all.final_regressor_name);
-    all.l.finish(&all, all.l.data);
-    if (all.reg.weight_vector != NULL)
-      free(all.reg.weight_vector);
-    if (all.searnstr != NULL) free(all.searnstr);
-    free_parser(all);
-    finalize_source(all.p);
-    free(all.p->lp);
-    all.p->parse_name.erase();
-    all.p->parse_name.delete_v();
-    free(all.p);
-    free(all.sd);
-    for (int i = 0; i < all.options_from_file_argc; i++)
-      free(all.options_from_file_argv[i]);
-    free(all.options_from_file_argv);
-    for (size_t i = 0; i < all.final_prediction_sink.size(); i++)
-      if (all.final_prediction_sink[i] != 1)
+      initialize_examples(all);
+
+      for(int i = 0; i < argc; i++)
+        free(argv[i]);
+      free (argv);
+
+      return all;
+    }
+
+    void finish(vw& all)
+    {
+      finalize_regressor(all, all.final_regressor_name);
+      all.l.finish(&all, all.l.data);
+      if (all.reg.weight_vector != NULL)
+        free(all.reg.weight_vector);
+      if (all.searnstr != NULL) free(all.searnstr);
+      free_parser(all);
+      finalize_source(all.p);
+      free(all.p->lp);
+      all.p->parse_name.erase();
+      all.p->parse_name.delete_v();
+      free(all.p);
+      free(all.sd);
+      for (int i = 0; i < all.options_from_file_argc; i++)
+        free(all.options_from_file_argv[i]);
+      free(all.options_from_file_argv);
+      for (size_t i = 0; i < all.final_prediction_sink.size(); i++)
+        if (all.final_prediction_sink[i] != 1)
 #ifdef _WIN32
-	_close(all.final_prediction_sink[i]);
+          _close(all.final_prediction_sink[i]);
 #else
-	close(all.final_prediction_sink[i]);
+      close(all.final_prediction_sink[i]);
 #endif
-    all.final_prediction_sink.delete_v();
-    delete all.loss;
+      all.final_prediction_sink.delete_v();
+      delete all.loss;
+    }
   }
-}

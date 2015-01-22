@@ -349,7 +349,10 @@ void bfgs_iter_start(vw& all, bfgs& b, float* mem, int& lastj, double importance
     mem[(MEM_GT+origin)%b.mem_stride] = w[W_GT];
     g1_Hg1 += w[W_GT] * w[W_GT] * w[W_COND];
     g1_g1 += w[W_GT] * w[W_GT];
-    w[W_DIR] = -w[W_COND]*w[W_GT];
+    w[W_DIR] = -w[W_GT];
+      if (w[W_DIR] > 0) {
+      fprintf(stderr, "I is %d,  wdir is %-10f ", i, w[W_DIR]);
+      }
     w[W_GT] = 0;
   }
   lastj = 0;
@@ -503,7 +506,8 @@ double wolfe_eval(vw& all, bfgs& b, float* mem, double loss_sum, double previous
   // double new_step_cross = (loss_sum-previous_loss_sum-g1_d*step)/(g0_d-g1_d);
 
   if (!all.quiet)
-    fprintf(stderr, "%-10.5f\t%-10.5f\t%s%-10f\t%-10f\t", g1_g1/(importance_weight_sum*importance_weight_sum), g1_Hg1/importance_weight_sum, " ", wolfe1, wolfe2);
+    //fprintf(stderr, "%-10.5f\t%-10.5f\t%s%-10f\t%-10f\t", g1_g1/(importance_weight_sum*importance_weight_sum), g1_Hg1/importance_weight_sum, " ", wolfe1, wolfe2);
+      fprintf(stderr, "wolfe eval: %-10f (bound:%-10f), %-10f, stepsize: %-10f, g0_d: %-10f ,loss_sum:%-10f, preloss:%-10f\n", wolfe1, b.wolfe1_bound, wolfe2, step_size, g0_d, loss_sum, previous_loss_sum);
   return 0.5*step_size;
 }
 
@@ -606,10 +610,17 @@ void update_weight(vw& all, float step_size, size_t current_pass)
     uint32_t length = 1 << all.num_bits;
     size_t stride = all.stride;
     weight* w = all.reg.weight_vector;
+    //fprintf(stderr, "stepsize:%f ", step_size);
     
-    for(uint32_t i = 0; i < length; i++, w+=stride)
+    for(uint32_t i = 0; i < length; i++, w+=stride) {
+
+      fprintf(stderr, "wxt %-10f ",  w[W_XT]);
+      fprintf(stderr, "wdir %-10f ",  w[W_DIR]);
+      
       w[W_XT] += step_size * w[W_DIR];
-  }
+      fprintf(stderr, "wxt %-10f ", w[W_XT]);
+      }
+}
 
 // add by x
 void update_solution(vw& all, bfgs& b) {
@@ -754,7 +765,7 @@ int process_pass(vw& all, bfgs& b) {
 			ftime(&b.t_end_global);
 			b.net_time = (int) (1000.0 * (b.t_end_global.time - b.t_start_global.time) + (b.t_end_global.millitm - b.t_start_global.millitm)); 
 			if (!all.quiet)
-			  fprintf(stderr, "%-10s\t%-10.5f\t%-10.5f\n", "", d_mag, b.step_size);
+			  fprintf(stderr, " no hessian on %-10s\t%-10.5f\t%-10.5f\n", "", d_mag, b.step_size);
 			b.predictions.erase();
 			update_weight(all, b.step_size, b.current_pass);		     		      
 		      }
@@ -791,6 +802,7 @@ int process_pass(vw& all, bfgs& b) {
 		  float d_mag = direction_magnitude(all);
 
 		  b.predictions.erase();
+		  fprintf(stderr, "\n the step size of convation step is %-10.6f\t", b.step_size);
 		  update_weight(all, b.step_size, b.current_pass);
 		  ftime(&b.t_end_global);
 		  b.net_time = (int) (1000.0 * (b.t_end_global.time - b.t_start_global.time) + (b.t_end_global.millitm - b.t_start_global.millitm)); 
@@ -1043,6 +1055,18 @@ void drive(void* in, void* d)
     }
 }
 
+void Printw(vw& all){
+  uint32_t length = 1 << all.num_bits;
+  size_t stride = all.stride;
+  weight* w = all.reg.weight_vector;
+  for(uint32_t i = 0; i < length; i++, w+=stride) {
+        fprintf(stdout, "the ith w[i] is %d, %d,%f \n", i, 0,  w[0]); // add by x
+        fprintf(stdout, "the ith w[i] is %d, %d,%f \n", i, 1,  w[1]); // add by x
+        fprintf(stdout, "the ith w[i] is %d, %d,%f \n", i, 2,  w[2]); // add by x
+        fprintf(stdout, "the ith w[i] is %d, %d,%f \n", i, 3,  w[3]); // add by x
+      
+      }
+}
 void parse_args(vw& all, std::vector<std::string>&opts, po::variables_map& vm, po::variables_map& vm_file)
 {
   bfgs* b = (bfgs*)calloc(1,sizeof(bfgs));

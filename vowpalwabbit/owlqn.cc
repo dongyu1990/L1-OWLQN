@@ -168,8 +168,7 @@ namespace OWLQN {
     label_data* ld = (label_data*)ec->ld;
     all.set_minmax(all.sd, ld->label);
 
-    float loss_grad = all.loss->first_derivative(all.sd, fp,ld->label)
-      * ld->weight;
+    float loss_grad = all.loss->first_derivative(all.sd, fp,ld->label) * ld->weight;
 
     size_t mask = all.weight_mask;
     weight* weights = all.reg.weight_vector;
@@ -234,7 +233,10 @@ namespace OWLQN {
       //g1_Hg1 += w[W_GT] * w[W_GT]; 
       //g1_g1 += w[W_GT] * w[W_GT];
       // initial direction
-      w[W_DIR] = - w[W_GT]; 
+      w[W_DIR] =  -w[W_GT];
+      if (w[W_DIR] > 0) {
+      fprintf(stderr, "I is %d,  wdir is %-10f ", i, w[W_DIR]);
+      }
       w[W_GT] = 0;
     }
     lastj = 0;
@@ -268,9 +270,9 @@ namespace OWLQN {
 
       // direction is opposite to gradient
       if (all.l1_lambda > 0.0) {
-        w[W_DIR] = -w[W_PGT];   
+        w[W_DIR] = w[W_PGT];   
       } else {
-        w[W_DIR] = -w[W_GT]; 
+        w[W_DIR] = w[W_GT]; 
       }
 
       y_s += mem[(MEM_YT + origin) % b.mem_stride] 
@@ -285,7 +287,7 @@ namespace OWLQN {
     rho[0] = 1 / y_s;
 
     // initial hessian matrix = gamma * I
-    double gamma = y_s / y_Hy;  
+    double gamma = (float)(y_s / y_Hy);  
 
     // two-loops: alpha = rho * ST * q ; (q = wDIR)
     for (int j = 0; j < lastj; j++) {
@@ -328,7 +330,7 @@ namespace OWLQN {
     mem = mem0;
     w = w0;
     for(uint32_t i = 0; i < length; i++, mem += b.mem_stride, w += stride) {
-      w[W_DIR] += (float) coef_j * mem[(MEM_ST + origin) % b.mem_stride];
+      w[W_DIR] =-w[W_DIR]- (float) coef_j * mem[(MEM_ST + origin) % b.mem_stride];
     }
 
     /************************
@@ -394,10 +396,10 @@ namespace OWLQN {
       g1_d += w[W_GT] * w[W_DIR];
     }
 
-    wolfe1 = (loss_sum - previous_loss_sum) / (step_size * g0_d);
+    wolfe1 = (loss_sum - previous_loss_sum) / (step_size * g0_d );
     if (!all.quiet) {
       double wolfe2 = g1_d / g0_d;
-      fprintf(stderr, "wolfe eval: %-10f (bound:%-10f), %-10f\n", wolfe1, b.wolfe1_bound, wolfe2);
+      fprintf(stderr, "wolfe eval: %-10f (bound:%-10f), %-10f, stepsize: %-10f, g0_d: %-10f ,loss_sum:%-10f, preloss:%-10f\n", wolfe1, b.wolfe1_bound, wolfe2, step_size, g0_d, loss_sum, previous_loss_sum);
     }
 
     return 0.5 * step_size;
@@ -456,7 +458,7 @@ namespace OWLQN {
     return ret;
   }
 
-  void update_weight(vw& all, float step_size, size_t current_pass) {
+  void update_weight(vw& all, float step_size, size_t current_pass, bool flag) {
     uint32_t length = 1 << all.num_bits;
     size_t stride = all.stride;
     weight* w = all.reg.weight_vector;
@@ -468,6 +470,19 @@ namespace OWLQN {
           w[W_XT] = 0.0;
         }
       } // end if
+    } // end for
+  }
+  void update_weight1(vw& all, float step_size, size_t current_pass) {
+    uint32_t length = 1 << all.num_bits;
+    size_t stride = all.stride;
+    weight* w = all.reg.weight_vector;
+
+    for(uint32_t i = 0; i < length; i++, w += stride) {
+      //fprintf(stderr, "wxt %-10f ",  w[W_XT]);
+      //fprintf(stderr, "wdir %-10f ",  w[W_DIR]);
+      w[W_XT] = w[W_XP] + step_size * w[W_DIR];
+      //if (w[W_XT] != 0.) {
+      //fprintf(stderr, "wxt %-10f ", w[W_XT]);
     } // end for
   }
 
@@ -493,8 +508,14 @@ namespace OWLQN {
     int status = LEARN_OK;
 
     // synchronize loss and gradient
+
+    /********************************************************************/
+    /* A) FIRST PASS FINISHED: INITIALIZE FIRST LINE SEARCH *************/
+    /********************************************************************/ 
+    if (b.first_pass) {
     if (all.span_server != "") {
       b.loss_sum = accumulate_scalar(all, all.span_server, b.loss_sum);
+      fprintf(stderr, "span_server_loss:%-10f\n",b.loss_sum); 
       accumulate(all, all.span_server, all.reg, W_GT);
     }
     if (all.l1_lambda > 0.) {
@@ -506,14 +527,9 @@ namespace OWLQN {
       fprintf(stderr, "M: W_XT=%.5f\tW_GT=%.3f\tW_DIR=%.3f\tW_PGT=%.3f\tW_XP=%.5f\n", 
           compute_magnitude(all, W_XT), compute_magnitude(all, W_GT), compute_magnitude(all, W_DIR),
           compute_magnitude(all, W_PGT), compute_magnitude(all, W_XP));
-      fprintf(stderr, "pass = %2lu avg.loss = %-10.5f\n", 
-          (long unsigned int)b.current_pass + 1, b.loss_sum / b.importance_weight_sum);
+      fprintf(stderr, "pass = %2lu avg.loss = %-10.5f, b.loss_sum = %-10f, imortance_weight = %-10f\n", 
+          (long unsigned int)b.current_pass + 1, b.loss_sum / b.importance_weight_sum, b.loss_sum, b.importance_weight_sum);
     }
-
-    /********************************************************************/
-    /* A) FIRST PASS FINISHED: INITIALIZE FIRST LINE SEARCH *************/
-    /********************************************************************/ 
-    if (b.first_pass) {
       if(all.span_server != "") {
         float temp = (float)b.importance_weight_sum;
         b.importance_weight_sum = accumulate_scalar(all, all.span_server, temp);
@@ -525,8 +541,9 @@ namespace OWLQN {
       bfgs_iter_start(all, b, b.mem, b.lastj, b.importance_weight_sum, b.origin);
         
       float d_mag = compute_magnitude(all, W_DIR);
-      b.step_size = 1.0 / sqrt(d_mag);
-
+      //b.step_size = 1.0 / sqrt(d_mag);
+      b.step_size = 0.5;
+      b.gradient_pass = false;
       //TODO: make sure initial variables are not a minimizer
 
       if (all.l1_lambda > 0.0) {
@@ -537,13 +554,22 @@ namespace OWLQN {
       if (!all.quiet) {
         fprintf(stderr, "update step_size = %.5f, d_mag = %.5f\n", b.step_size, d_mag);
       }
-      update_weight(all, b.step_size, b.current_pass); 
+      //update_weight1(all, b.step_size, b.current_pass); 
     
-    } else {
+    } 
+    else {
       /********************************************************************/
       /* B) GRADIENT CALCULATED *******************************************/
       /********************************************************************/ 
       // We just finished computing all gradients
+      if (b.gradient_pass) {
+		  if(all.span_server != "") {
+		    float t = (float)b.loss_sum;
+		    b.loss_sum = accumulate_scalar(all, all.span_server, t);  //Accumulate loss_sums
+		    accumulate(all, all.span_server, all.reg, 1); //Accumulate gradients from all nodes
+		  }
+		  if (all.l1_lambda > 0.)
+		    b.loss_sum += add_regularization(all, b, all.l1_lambda);
       double wolfe1;
       double new_step = wolfe_eval(all, b, b.mem, b.loss_sum, b.previous_loss_sum, 
           b.step_size, b.importance_weight_sum, b.origin, wolfe1);
@@ -562,15 +588,16 @@ namespace OWLQN {
       /********************************************************************/
       /* B1) LINE SEARCH FAILED *******************************************/
       /********************************************************************/ 
-      else if (wolfe1 < b.wolfe1_bound || b.loss_sum > b.previous_loss_sum) {
+      else if (wolfe1<b.wolfe1_bound || b.loss_sum > b.previous_loss_sum) {
         // curvature violated, or we stepped too far last time: step back
         float ratio = (b.step_size == 0.f) ? 0.f : (float) (new_step / b.step_size);
         if (!all.quiet) {
           fprintf(stderr, "step too far? loss %.5f < %.5f (step revise x %.1f: %.5f)\n", 
               b.loss_sum, b.previous_loss_sum, ratio, new_step);
         }
-
-        update_weight(all, (float)(-b.step_size + new_step), b.current_pass); 
+        //b.predictions.erase();
+        select_orthant(all);
+        update_weight(all, (float)(-b.step_size + new_step), b.current_pass, true); 
         b.step_size = (float)new_step;
         zero_derivative(all);
         b.loss_sum = 0.;
@@ -613,16 +640,25 @@ namespace OWLQN {
             fprintf(stderr, "update step_size = %.5f, d_mag = %.5f\n", 
                 b.step_size, compute_magnitude(all, W_DIR));
           }
-          update_weight(all, b.step_size, b.current_pass); 
+          update_weight(all, b.step_size, b.current_pass, false); 
 
         } // end if-else [loss decrease very small]
       } // end if-else [search failed or success]
 
     } // end if-else [first pass]
+    else // no gradient pass ,just after first pass 
+    {
+      float d_mag = compute_magnitude(all, W_DIR);
+      b.step_size = 1.0/sqrt(d_mag);
+      b.step_size /= 6.6;
+      update_weight1(all,b.step_size,b.current_pass);
+      b.gradient_pass = true;
 
+    }
+    }  // else
     b.current_pass++;
     b.first_pass = false;
-
+    //b.gradient_pass = true;
     if (!all.quiet) {
       ftime(&b.t_end_global);
       double previous_net_time = b.net_time;
@@ -644,10 +680,11 @@ namespace OWLQN {
     if (b.first_pass)
       b.importance_weight_sum += ld->weight;
 
-    //if (b.gradient_pass) {
+    if (b.gradient_pass) {
     ec->final_prediction = predict_and_gradient(all, ec);//w[0] & w[1]
     ec->loss = all.loss->getLoss(all.sd, ec->final_prediction, ld->label) * ld->weight;
-    b.loss_sum += ec->loss;
+    b.loss_sum += ec->loss;}
+    
   }
 
   void learn(void* a, void* d, example* ec) {
